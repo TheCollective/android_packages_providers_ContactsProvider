@@ -63,6 +63,9 @@ import com.android.providers.contacts.TransactionContext;
 import com.android.providers.contacts.aggregation.util.CommonNicknameCache;
 import com.android.providers.contacts.aggregation.util.ContactMatcher;
 import com.android.providers.contacts.aggregation.util.ContactMatcher.MatchScore;
+import com.android.providers.contacts.database.ContactsTableUtil;
+import com.android.providers.contacts.util.Clock;
+
 import com.google.android.collect.Maps;
 
 import java.util.ArrayList;
@@ -143,7 +146,6 @@ public class ContactAggregator {
     private SQLiteStatement mAggregatedPresenceReplace;
     private SQLiteStatement mPresenceContactIdUpdate;
     private SQLiteStatement mRawContactCountQuery;
-    private SQLiteStatement mContactDelete;
     private SQLiteStatement mAggregatedPresenceDelete;
     private SQLiteStatement mMarkForAggregation;
     private SQLiteStatement mPhotoIdUpdate;
@@ -299,10 +301,6 @@ public class ContactAggregator {
                 " FROM " + Tables.RAW_CONTACTS +
                 " WHERE " + RawContacts.CONTACT_ID + "=?"
                         + " AND " + RawContacts._ID + "<>?");
-
-        mContactDelete = db.compileStatement(
-                "DELETE FROM " + Tables.CONTACTS +
-                " WHERE " + Contacts._ID + "=?");
 
         mAggregatedPresenceDelete = db.compileStatement(
                 "DELETE FROM " + Tables.AGGREGATED_PRESENCE +
@@ -778,8 +776,7 @@ public class ContactAggregator {
             // Joining with an existing aggregate
             if (currentContactContentsCount == 0) {
                 // Delete a previous aggregate if it only contained this raw contact
-                mContactDelete.bindLong(1, currentContactId);
-                mContactDelete.execute();
+                ContactsTableUtil.deleteContact(db, currentContactId);
 
                 mAggregatedPresenceDelete.bindLong(1, currentContactId);
                 mAggregatedPresenceDelete.execute();
@@ -1704,7 +1701,6 @@ public class ContactAggregator {
                         + AccountsColumns.CONCRETE_DATA_SET + ","
                         + RawContacts.SOURCE_ID + ","
                         + RawContacts.CUSTOM_RINGTONE + ","
-                        + RawContacts.CUSTOM_NOTIFICATION + ","
                         + RawContacts.SEND_TO_VOICEMAIL + ","
                         + RawContacts.LAST_TIME_CONTACTED + ","
                         + RawContacts.TIMES_CONTACTED + ","
@@ -1740,16 +1736,15 @@ public class ContactAggregator {
         int DATA_SET = 5;
         int SOURCE_ID = 6;
         int CUSTOM_RINGTONE = 7;
-        int CUSTOM_NOTIFICATION = 8;
-        int SEND_TO_VOICEMAIL = 9;
-        int LAST_TIME_CONTACTED = 10;
-        int TIMES_CONTACTED = 11;
-        int STARRED = 12;
-        int NAME_VERIFIED = 13;
-        int DATA_ID = 14;
-        int MIMETYPE_ID = 15;
-        int IS_SUPER_PRIMARY = 16;
-        int PHOTO_FILE_ID = 17;
+        int SEND_TO_VOICEMAIL = 8;
+        int LAST_TIME_CONTACTED = 9;
+        int TIMES_CONTACTED = 10;
+        int STARRED = 11;
+        int NAME_VERIFIED = 12;
+        int DATA_ID = 13;
+        int MIMETYPE_ID = 14;
+        int IS_SUPER_PRIMARY = 15;
+        int PHOTO_FILE_ID = 16;
     }
 
     private interface ContactReplaceSqlStatement {
@@ -1761,12 +1756,12 @@ public class ContactAggregator {
                         + Contacts.PHOTO_FILE_ID + "=?, "
                         + Contacts.SEND_TO_VOICEMAIL + "=?, "
                         + Contacts.CUSTOM_RINGTONE + "=?, "
-                        + Contacts.CUSTOM_NOTIFICATION + "=?, "
                         + Contacts.LAST_TIME_CONTACTED + "=?, "
                         + Contacts.TIMES_CONTACTED + "=?, "
                         + Contacts.STARRED + "=?, "
                         + Contacts.HAS_PHONE_NUMBER + "=?, "
-                        + Contacts.LOOKUP_KEY + "=? " +
+                        + Contacts.LOOKUP_KEY + "=?, "
+                        + Contacts.CONTACT_LAST_UPDATED_TIMESTAMP + "=? " +
                 " WHERE " + Contacts._ID + "=?";
 
         String INSERT_SQL =
@@ -1776,12 +1771,13 @@ public class ContactAggregator {
                         + Contacts.PHOTO_FILE_ID + ", "
                         + Contacts.SEND_TO_VOICEMAIL + ", "
                         + Contacts.CUSTOM_RINGTONE + ", "
-                        + Contacts.CUSTOM_NOTIFICATION + ", "
                         + Contacts.LAST_TIME_CONTACTED + ", "
                         + Contacts.TIMES_CONTACTED + ", "
                         + Contacts.STARRED + ", "
                         + Contacts.HAS_PHONE_NUMBER + ", "
-                        + Contacts.LOOKUP_KEY + ") " +
+                        + Contacts.LOOKUP_KEY + ", "
+                        + Contacts.CONTACT_LAST_UPDATED_TIMESTAMP
+                        + ") " +
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?)";
 
         int NAME_RAW_CONTACT_ID = 1;
@@ -1789,12 +1785,12 @@ public class ContactAggregator {
         int PHOTO_FILE_ID = 3;
         int SEND_TO_VOICEMAIL = 4;
         int CUSTOM_RINGTONE = 5;
-        int CUSTOM_NOTIFICATION = 6;
-        int LAST_TIME_CONTACTED = 7;
-        int TIMES_CONTACTED = 8;
-        int STARRED = 9;
-        int HAS_PHONE_NUMBER = 10;
-        int LOOKUP_KEY = 11;
+        int LAST_TIME_CONTACTED = 6;
+        int TIMES_CONTACTED = 7;
+        int STARRED = 8;
+        int HAS_PHONE_NUMBER = 9;
+        int LOOKUP_KEY = 10;
+        int CONTACT_LAST_UPDATED_TIMESTAMP = 11;
         int CONTACT_ID = 12;
     }
 
@@ -1831,7 +1827,6 @@ public class ContactAggregator {
         int totalRowCount = 0;
         int contactSendToVoicemail = 0;
         String contactCustomRingtone = null;
-        String contactCustomNotification = null;
         long contactLastTimeContacted = 0;
         int contactTimesContacted = 0;
         int contactStarred = 0;
@@ -1875,11 +1870,6 @@ public class ContactAggregator {
                     if (contactCustomRingtone == null
                             && !c.isNull(RawContactsQuery.CUSTOM_RINGTONE)) {
                         contactCustomRingtone = c.getString(RawContactsQuery.CUSTOM_RINGTONE);
-                    }
-
-                    if (contactCustomNotification == null
-                            && !c.isNull(RawContactsQuery.CUSTOM_NOTIFICATION)) {
-                        contactCustomNotification = c.getString(RawContactsQuery.CUSTOM_NOTIFICATION);
                     }
 
                     long lastTimeContacted = c.getLong(RawContactsQuery.LAST_TIME_CONTACTED);
@@ -1955,8 +1945,6 @@ public class ContactAggregator {
                 totalRowCount == contactSendToVoicemail ? 1 : 0);
         DatabaseUtils.bindObjectToProgram(statement, ContactReplaceSqlStatement.CUSTOM_RINGTONE,
                 contactCustomRingtone);
-        DatabaseUtils.bindObjectToProgram(statement, ContactReplaceSqlStatement.CUSTOM_NOTIFICATION,
-                contactCustomNotification);
         statement.bindLong(ContactReplaceSqlStatement.LAST_TIME_CONTACTED,
                 contactLastTimeContacted);
         statement.bindLong(ContactReplaceSqlStatement.TIMES_CONTACTED,
@@ -1967,6 +1955,8 @@ public class ContactAggregator {
                 hasPhoneNumber);
         statement.bindString(ContactReplaceSqlStatement.LOOKUP_KEY,
                 Uri.encode(lookupKey.toString()));
+        statement.bindLong(ContactReplaceSqlStatement.CONTACT_LAST_UPDATED_TIMESTAMP,
+                Clock.getInstance().currentTimeMillis());
     }
 
     /**
